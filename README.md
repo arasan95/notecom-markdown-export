@@ -26,7 +26,7 @@ Markdown には次の YAML フロントマターが付与されます。
 
 ## インストール
 
-- [Greasy Fork](https://greasyfork.org/) または [GitHub のリリースページ](../../releases) から `notecom-export.user.js` を入手
+- [Greasy Fork のスクリプトページ](https://greasyfork.org/ja/scripts/590586-note-com-markdownエクスポート-notecomフォルダへ保存) または [GitHub のリリースページ](../../releases) から `notecom-export.user.js` を入手
 - Tampermonkey などの UserScript マネージャーに追加
 - note.com の記事ページを開き、右下の「⇩ note.md」ボタンをクリック
 
