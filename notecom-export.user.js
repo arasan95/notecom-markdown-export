@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         note.com Markdownエクスポート（notecomフォルダへ保存）
 // @namespace    kf.notecom-export
-// @version      0.2.0
-// @description  note.comの記事をMarkdown＋画像としてタイトル名でダウンロードフォルダの notecom/ 直下に保存する（YAMLフロントマター付き）
+// @version      0.3.0
+// @description  note.comの記事を画像埋め込みのMarkdown（YAMLフロントマター付き）としてタイトル名で notecom/ 直下に保存する
 // @author       kf
 // @license      MIT
 // @homepageURL  https://github.com/arasan95/notecom-markdown-export
@@ -11,6 +11,7 @@
 // @updateURL    https://raw.githubusercontent.com/arasan95/notecom-markdown-export/main/notecom-export.user.js
 // @match        https://note.com/*
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -1187,6 +1188,47 @@ return exports;
     return 'jpg';
   }
 
+  function getMime(src) {
+    return getExt(src) === 'jpg' ? 'image/jpeg' : 'image/' + getExt(src);
+  }
+
+  function arrayBufferToDataUrl(buf, mime) {
+    var bytes = new Uint8Array(buf);
+    var chunk = 0x8000;
+    var bin = '';
+    for (var i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return 'data:' + mime + ';base64,' + btoa(bin);
+  }
+
+  function fetchImageAsDataUrl(src, mime) {
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      function once(fn, arg) { if (!done) { done = true; fn(arg); } }
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: src,
+          responseType: 'arraybuffer',
+          timeout: 30000,
+          onload: function (res) {
+            if (res && res.status >= 200 && res.status < 300 && res.response) {
+              try { once(resolve, arrayBufferToDataUrl(res.response, mime)); }
+              catch (e) { once(reject, e); }
+            } else {
+              once(reject, new Error('HTTP ' + (res && res.status)));
+            }
+          },
+          onerror: function (e) { once(reject, e || new Error('network error')); },
+          ontimeout: function () { once(reject, new Error('timeout')); }
+        });
+      } catch (e) {
+        once(reject, e);
+      }
+    });
+  }
+
   function escYaml(v) {
     return String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }
@@ -1263,70 +1305,53 @@ return exports;
       if (!src) return;
       if (src.indexOf('//') === 0) src = 'https:' + src;
       if (!/^https?:/.test(src)) return;
-      var file = article.safeTitle + '-image-' + (images.length + 1) + '.' + getExt(src);
-      images.push({ src: src, file: file });
-      img.setAttribute('src', file);
+      images.push({ img: img, src: src, mime: getMime(src) });
     });
 
-    var td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
-    if (typeof turndownPluginGfm !== 'undefined') td.use(turndownPluginGfm.gfm);
-    var bodyMd = td.turndown(clone);
-    bodyMd = bodyMd
-      .replace(/(?<!!)\[\]\([^)]*\)/g, '')
-      .replace(/\n{3,}/g, '\n\n');
+    var embedded = 0;
+    function embedNext(i) {
+      if (i >= images.length) return Promise.resolve();
+      var im = images[i];
+      setStatus('画像を埋め込み中: ' + (i + 1) + '/' + images.length + '…');
+      return fetchImageAsDataUrl(im.src, im.mime).then(function (dataUrl) {
+        im.img.setAttribute('src', dataUrl);
+        embedded++;
+      }, function (err) {
+        console.warn('[notecom] 画像の埋め込みに失敗（元URLを残します）:', im.src, err);
+      }).then(function () {
+        return embedNext(i + 1);
+      });
+    }
 
-    return { md: buildMarkdown(article, bodyMd), images: images, slug: article.slug, safeTitle: article.safeTitle };
+    return embedNext(0).then(function () {
+      var td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
+      if (typeof turndownPluginGfm !== 'undefined') td.use(turndownPluginGfm.gfm);
+      var bodyMd = td.turndown(clone);
+      bodyMd = bodyMd
+        .replace(/(?<!!)\[\]\([^)]*\)/g, '')
+        .replace(/\n{3,}/g, '\n\n');
+      return { md: buildMarkdown(article, bodyMd), images: images.length, embedded: embedded, slug: article.slug, safeTitle: article.safeTitle };
+    });
   }
 
-  function downloadAll(safeTitle, md, images) {
-    var base = DL_ROOT + '/';
-    var failed = 0;
-    var failList = [];
-    var i;
-    for (i = 0; i < images.length; i++) {
-      (function (im, idx) {
-        setTimeout(function () {
-          try {
-            GM_download({
-              url: im.src,
-              name: base + im.file,
-              saveAs: false,
-              onload: function () { },
-              onerror: function () {
-                failed++;
-                failList.push(im.file);
-                console.warn('[notecom] 画像DL失敗:', im.file, im.src);
-                setStatus('画像DL失敗: ' + im.file + '（' + failed + '/' + images.length + ' 枚目）', true);
-              }
-            });
-          } catch (e) {
-            failed++;
-            failList.push(im.file);
-            console.warn('[notecom] 画像DL失敗', im.src, e);
-            setStatus('画像DL失敗: ' + im.file, true);
-          }
-        }, idx * 400);
-      })(images[i], i);
-    }
-    setTimeout(function () {
-      var dataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
-      GM_download({
-        url: dataUrl,
-        name: base + safeTitle + '.md',
-        saveAs: false,
-        onerror: function (e) {
-          console.warn('[notecom] Markdown保存失敗', e);
-          setStatus('Markdownの保存に失敗しました', true);
-        },
-        onload: function () {
-          if (failed > 0) {
-            setStatus('保存しました（画像 ' + failed + ' 枚失敗: ' + failList.join(', ') + '）', true);
-          } else {
-            setStatus('保存しました: ' + safeTitle + '（画像 ' + images.length + ' 枚）');
-          }
+  function downloadAll(safeTitle, md, total, embedded) {
+    var dataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
+    GM_download({
+      url: dataUrl,
+      name: DL_ROOT + '/' + safeTitle + '.md',
+      saveAs: false,
+      onerror: function (e) {
+        console.warn('[notecom] Markdown保存失敗', e);
+        setStatus('Markdownの保存に失敗しました', true);
+      },
+      onload: function () {
+        if (embedded < total) {
+          setStatus('保存しました: ' + safeTitle + '（画像 ' + (total - embedded) + ' 枚は埋め込み失敗）', true);
+        } else {
+          setStatus('保存しました: ' + safeTitle + '（画像 ' + embedded + ' 枚を埋め込み）');
         }
-      });
-    }, images.length * 400 + 300);
+      }
+    });
   }
 
   var statusEl = null;
@@ -1349,15 +1374,22 @@ return exports;
 
     btn.addEventListener('click', function () {
       statusEl.style.opacity = '1';
+      var article;
       try {
-        var article = extractArticle();
-        var result = render(article);
-        setStatus('保存を開始しました: ' + result.safeTitle + '（画像 ' + result.images.length + ' 枚）…');
-        downloadAll(result.safeTitle, result.md, result.images);
+        article = extractArticle();
       } catch (e) {
         setStatus('エラー: ' + e.message, true);
         console.error('[notecom]', e);
+        return;
       }
+      setStatus('画像を読み込み中…');
+      render(article).then(function (result) {
+        setStatus('保存を開始しました: ' + result.safeTitle + '…');
+        downloadAll(result.safeTitle, result.md, result.images, result.embedded);
+      }).catch(function (e) {
+        setStatus('エラー: ' + e.message, true);
+        console.error('[notecom]', e);
+      });
     });
 
     document.body.appendChild(btn);

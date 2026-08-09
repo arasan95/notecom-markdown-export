@@ -19,7 +19,9 @@ async function main() {
 
   const downloads = [];
   dom.window.GM_download = (opts) => downloads.push({ ...opts });
-  dom.window.setTimeout = (fn) => { fn(); return 0; };
+  dom.window.GM_xmlhttpRequest = (opts) => {
+    opts.onload({ status: 200, response: new Uint8Array([137, 80, 78, 71]).buffer });
+  };
 
   const src = fs.readFileSync(path.join(__dirname, '..', 'notecom-export.user.js'), 'utf8');
   vm.runInContext(src, ctx, { filename: 'userscript.js' });
@@ -27,6 +29,7 @@ async function main() {
   const btn = dom.window.document.querySelector('#notecom-export-btn');
   if (!btn) { console.error('FAIL: button not found'); process.exit(1); }
   btn.click();
+  await new Promise(r => setTimeout(r, 0));
 
   const status = dom.window.document.querySelector('#notecom-export-status');
   console.log('status:', status ? status.textContent : '(none)');
@@ -41,11 +44,18 @@ async function main() {
   console.log('OK 保存先は notecom/ 直下');
   console.log('--- 保存先 ---');
   console.log(md.name);
-  downloads.filter(d => d.name !== md.name).forEach(d => console.log(d.name));
+  const extra = downloads.filter(d => d.name !== md.name);
+  if (extra.length) {
+    console.error('FAIL: 画像などの追加ダウンロードがあります');
+    extra.forEach(d => console.error(d.name));
+    process.exit(1);
+  }
+  console.log('OK 画像ファイルの個別ダウンロードなし');
 
   const content = decodeURIComponent(md.url.split(',')[1]);
-  console.log('--- Markdown 内容 ---');
-  console.log(content);
+  console.log('--- Markdown 内容 (先頭のみ) ---');
+  console.log(content.split('\n').slice(0, 12).join('\n'));
+  console.log('...(全' + content.length + '文字, 画像はbase64埋め込み)');
   console.log('--- 検証 ---');
   const checks = [
     [/^title: "/m, 'frontmatter: title'],
@@ -53,7 +63,7 @@ async function main() {
     [/^author: /m, 'frontmatter: author'],
     [/^url: /m, 'frontmatter: url'],
     [/^source: note\.com$/m, 'frontmatter: source'],
-    [/!\[.*\]\([^/]+-image-\d+\.\w+\)/, '画像の相対パス'],
+    [/!\[.*\]\(data:image\/[a-z0-9+.-]+;base64,/, '画像のbase64埋め込み'],
   ];
   let ok = true;
   for (const [re, name] of checks) {
