@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         note.com Markdownエクスポート（notecomフォルダへ保存）
-// @namespace    kf.notecom-export
+// @namespace    arasan95.notecom-export
 // @version      0.3.0
 // @description  note.comの記事を画像埋め込みのMarkdown（YAMLフロントマター付き）としてタイトル名で notecom/ 直下に保存する
-// @author       kf
+// @author       arasan95
 // @license      MIT
 // @homepageURL  https://github.com/arasan95/notecom-markdown-export
 // @supportURL   https://github.com/arasan95/notecom-markdown-export/issues
